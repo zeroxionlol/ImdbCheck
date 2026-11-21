@@ -126,6 +126,13 @@ fun SearchScreen(state: SearchState, onOpen: (Screen) -> Unit) {
                 unfocusedPlaceholderColor = Cine.TextDim,
             ),
         )
+        ListUi.category?.takeIf { it in Repo.categories }?.let { c ->
+            Text(
+                "Mit + hinzugefügte Titel landen in der Kategorie „$c“.",
+                color = Cine.Gold, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+        }
         Spacer(Modifier.height(8.dp))
 
         val q = state.query.trim()
@@ -179,7 +186,7 @@ fun SearchScreen(state: SearchState, onOpen: (Screen) -> Unit) {
                     }
                     IconButton(
                         onClick = {
-                            if (inList) Repo.remove(s.id) else Repo.appScope.launch { Repo.addSuggestion(s) }
+                            if (inList) Repo.remove(s.id) else Repo.appScope.launch { Repo.addSuggestion(s, listOfNotNull(ListUi.category?.takeIf { it in Repo.categories })) }
                         }
                     ) {
                         if (inList) Icon(Icons.Filled.Check, "In der Liste", tint = Cine.Gold)

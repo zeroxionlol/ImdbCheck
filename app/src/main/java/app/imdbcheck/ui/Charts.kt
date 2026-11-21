@@ -19,7 +19,6 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -45,71 +44,82 @@ fun seasonAverage(eps: List<Episode>): Double? {
 }
 
 /**
- * Heatmap wie bei seriesgraph: Spalten = Staffeln, Zeilen = Episoden, Farbe = Wertung.
- * Letzte Zeile: Durchschnitt je Staffel.
+ * Heatmap wie bei seriesgraph. Senkrecht: Spalten = Staffeln, Zeilen = Folgen.
+ * Waagerecht: Zeilen = Staffeln, Spalten = Folgen. Zusätzlich der Durchschnitt je Staffel (Ø).
  */
 @Composable
-fun Heatmap(episodes: List<Episode>, selected: Episode?, onSelect: (Episode) -> Unit) {
+fun Heatmap(episodes: List<Episode>, selected: Episode?, horizontal: Boolean, onSelect: (Episode) -> Unit) {
     val seasons = remember(episodes) { episodes.map { it.season }.distinct().sorted() }
     val maxEp = remember(episodes) { episodes.maxOfOrNull { it.number } ?: 0 }
     val byKey = remember(episodes) { episodes.associateBy { it.season to it.number } }
     val avgs = remember(episodes) { seasons.associateWith { s -> seasonAverage(episodes.filter { it.season == s }) } }
     val tm = rememberTextMeasurer()
-    val d = LocalDensity.current
 
-    val cellW = 44.dp; val cellH = 32.dp; val gap = 3.dp; val labelW = 38.dp; val headH = 26.dp; val avgGap = 8.dp
-    val width = labelW + (cellW + gap) * seasons.size
-    val height = headH + (cellH + gap) * (maxEp + 1) + avgGap
+    val cellW = 44.dp; val cellH = 32.dp; val gap = 3.dp; val avgGap = 8.dp
+    val labelW = if (horizontal) 40.dp else 38.dp
+    val headH = 26.dp
+    // Senkrecht: Spalten = Staffeln, Zeilen = Folgen (+ Ø-Zeile)
+    // Waagerecht: Zeilen = Staffeln, Spalten = Folgen (+ Ø-Spalte)
+    val cols = if (horizontal) maxEp else seasons.size
+    val rows = if (horizontal) seasons.size else maxEp
+    val width = labelW + (cellW + gap) * (cols + if (horizontal) 1 else 0) + if (horizontal) avgGap else 0.dp
+    val height = headH + (cellH + gap) * (rows + if (horizontal) 0 else 1) + if (horizontal) 0.dp else avgGap
+
+    /** Folge an Zeile/Spalte (beides 0-basiert) */
+    fun epAt(row: Int, col: Int): Episode? =
+        if (horizontal) seasons.getOrNull(row)?.let { byKey[it to col + 1] }
+        else seasons.getOrNull(col)?.let { byKey[it to row + 1] }
 
     Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
         Canvas(
             Modifier
                 .size(width, height)
-                .pointerInput(episodes) {
+                .pointerInput(episodes, horizontal) {
                     detectTapGestures { p ->
                         val cw = (cellW + gap).toPx(); val ch = (cellH + gap).toPx()
                         val col = floor((p.x - labelW.toPx()) / cw).toInt()
                         val row = floor((p.y - headH.toPx()) / ch).toInt()
-                        if (col in seasons.indices && row in 0 until maxEp) {
-                            byKey[seasons[col] to row + 1]?.let(onSelect)
-                        }
+                        if (col in 0 until cols && row in 0 until rows) epAt(row, col)?.let(onSelect)
                     }
                 }
         ) {
             val cw = cellW.toPx(); val ch = cellH.toPx(); val g = gap.toPx()
             val lw = labelW.toPx(); val hh = headH.toPx()
             val headStyle = TextStyle(color = Cine.TextDim, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            val avgHead = headStyle.copy(color = Cine.Gold, fontSize = 14.sp)
             val cellStyle = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            val r = CornerRadius(with(d) { 6.dp.toPx() })
+            val r = CornerRadius(6.dp.toPx())
 
-            seasons.forEachIndexed { ci, s ->
-                centeredText(tm, "S$s", Offset(lw + ci * (cw + g) + cw / 2, hh / 2), headStyle)
+            fun cell(x: Float, y: Float, rating: Double?, highlight: Boolean, avg: Boolean) {
+                drawRoundRect(Cine.rating(rating), Offset(x, y), Size(cw, ch), r)
+                if (avg) drawRoundRect(Cine.Gold, Offset(x, y), Size(cw, ch), r, style = Stroke(1.5f * density))
+                if (highlight) drawRoundRect(Color.White, Offset(x, y), Size(cw, ch), r, style = Stroke(2.5f * density))
+                centeredText(tm, formatRating(rating), Offset(x + cw / 2, y + ch / 2), cellStyle.copy(color = Cine.onRating(rating)))
             }
-            for (row in 0 until maxEp) {
-                val y = hh + row * (ch + g)
-                centeredText(tm, "E${row + 1}", Offset(lw / 2, y + ch / 2), headStyle)
-                seasons.forEachIndexed { ci, s ->
-                    val ep = byKey[s to row + 1] ?: return@forEachIndexed
-                    val x = lw + ci * (cw + g)
-                    drawRoundRect(Cine.rating(ep.rating), Offset(x, y), Size(cw, ch), r)
-                    if (ep == selected) {
-                        drawRoundRect(Color.White, Offset(x, y), Size(cw, ch), r, style = Stroke(2.5f * density))
-                    }
-                    centeredText(
-                        tm, formatRating(ep.rating), Offset(x + cw / 2, y + ch / 2),
-                        cellStyle.copy(color = Cine.onRating(ep.rating)),
-                    )
-                }
+
+            // Kopfzeile und Zeilenbeschriftung
+            for (c in 0 until cols) {
+                val label = if (horizontal) "E${c + 1}" else "S${seasons[c]}"
+                centeredText(tm, label, Offset(lw + c * (cw + g) + cw / 2, hh / 2), headStyle)
+            }
+            for (rr in 0 until rows) {
+                val label = if (horizontal) "S${seasons[rr]}" else "E${rr + 1}"
+                centeredText(tm, label, Offset(lw / 2, hh + rr * (ch + g) + ch / 2), headStyle)
+            }
+            // Zellen
+            for (rr in 0 until rows) for (c in 0 until cols) {
+                val ep = epAt(rr, c) ?: continue
+                cell(lw + c * (cw + g), hh + rr * (ch + g), ep.rating, ep == selected, avg = false)
             }
             // Durchschnitt
-            val y = hh + maxEp * (ch + g) + avgGap.toPx()
-            centeredText(tm, "Ø", Offset(lw / 2, y + ch / 2), headStyle.copy(color = Cine.Gold, fontSize = 14.sp))
-            seasons.forEachIndexed { ci, s ->
-                val a = avgs[s]
-                val x = lw + ci * (cw + g)
-                drawRoundRect(Cine.rating(a), Offset(x, y), Size(cw, ch), r)
-                drawRoundRect(Cine.Gold, Offset(x, y), Size(cw, ch), r, style = Stroke(1.5f * density))
-                centeredText(tm, formatRating(a), Offset(x + cw / 2, y + ch / 2), cellStyle.copy(color = Cine.onRating(a)))
+            if (horizontal) {
+                val x = lw + cols * (cw + g) + avgGap.toPx()
+                centeredText(tm, "Ø", Offset(x + cw / 2, hh / 2), avgHead)
+                seasons.forEachIndexed { rr, s -> cell(x, hh + rr * (ch + g), avgs[s], false, avg = true) }
+            } else {
+                val y = hh + rows * (ch + g) + avgGap.toPx()
+                centeredText(tm, "Ø", Offset(lw / 2, y + ch / 2), avgHead)
+                seasons.forEachIndexed { c, s -> cell(lw + c * (cw + g), y, avgs[s], false, avg = true) }
             }
         }
     }

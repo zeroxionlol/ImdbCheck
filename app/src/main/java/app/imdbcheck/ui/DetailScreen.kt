@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
@@ -82,6 +83,8 @@ fun DetailScreen(id: String, seed: Seed?, onBack: () -> Unit, onOpen: (Screen) -
     var selected by remember { mutableStateOf<Episode?>(null) }
     var view by rememberSaveable { mutableIntStateOf(0) } // 0 Heatmap, 1 Verlauf
     var reload by remember { mutableIntStateOf(0) }
+    var show by remember { mutableStateOf<app.imdbcheck.ShowStatus?>(null) }
+    var horizontal by remember { mutableStateOf(app.imdbcheck.Settings.heatmapHorizontal) }
 
     val listItem = Repo.items.firstOrNull { it.id == id }
     val inList = listItem != null
@@ -95,6 +98,10 @@ fun DetailScreen(id: String, seed: Seed?, onBack: () -> Unit, onOpen: (Screen) -
         } catch (e: Exception) {
             infoError = "IMDb-Daten konnten nicht geladen werden: ${e.message ?: "Netzwerkfehler"}"
         }
+    }
+    LaunchedEffect(id, isSeries, reload) {
+        if (!isSeries) return@LaunchedEffect
+        show = runCatching { Repo.showStatus(id, force = reload > 0) }.getOrNull()
     }
     LaunchedEffect(id, isSeries, reload) {
         if (!isSeries) return@LaunchedEffect
@@ -173,6 +180,39 @@ fun DetailScreen(id: String, seed: Seed?, onBack: () -> Unit, onOpen: (Screen) -
 
             infoError?.let { Text(it, color = Cine.Red, style = MaterialTheme.typography.bodyMedium) }
 
+            // ---------- Nächste Folge ----------
+            if (isSeries) {
+                val st = show
+                val next = st?.next?.takeIf { it.airMillis > System.currentTimeMillis() - 24 * 3600_000L }
+                    ?: listItem?.upcoming
+                val stText = st?.statusText ?: listItem?.status?.let { app.imdbcheck.ShowStatus(it, null).statusText }
+                if (next != null) {
+                    Panel {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.PlayArrow, null, tint = Cine.Gold, modifier = Modifier.size(28.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("Nächste Folge · ${next.relativeText()}", color = Cine.Gold, style = MaterialTheme.typography.labelLarge)
+                                Text(
+                                    next.code + (next.title?.let { " – $it" } ?: ""),
+                                    color = Cine.Text, style = MaterialTheme.typography.titleSmall,
+                                )
+                                Text(next.whenText(), color = Cine.TextDim, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                } else if (stText != null) {
+                    Text(
+                        when (st?.status ?: listItem?.status) {
+                            "Ended" -> "Serie ist abgeschlossen."
+                            "Running" -> "Läuft noch – nächster Sendetermin ist noch nicht bekannt."
+                            else -> "Status: $stText"
+                        },
+                        color = Cine.TextDim, style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+
             // ---------- Liste ----------
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (inList) {
@@ -196,11 +236,12 @@ fun DetailScreen(id: String, seed: Seed?, onBack: () -> Unit, onOpen: (Screen) -
                     Button(
                         onClick = {
                             val i = info
+                            val cats = listOfNotNull(ListUi.category?.takeIf { it in Repo.categories })
                             if (i != null) {
-                                Repo.addInfo(i)
+                                Repo.addInfo(i, cats)
                             } else if (seed != null) {
                                 Repo.appScope.launch {
-                                    Repo.addSuggestion(app.imdbcheck.Suggestion(id, seed.title, null, seed.yearText, seed.kind, null, seed.poster))
+                                    Repo.addSuggestion(app.imdbcheck.Suggestion(id, seed.title, null, seed.yearText, seed.kind, null, seed.poster), cats)
                                 }
                             }
                         },
@@ -210,6 +251,11 @@ fun DetailScreen(id: String, seed: Seed?, onBack: () -> Unit, onOpen: (Screen) -
                         Icon(Icons.Filled.Add, null); Spacer(Modifier.width(6.dp)); Text("Zu meiner Liste hinzufügen")
                     }
                 }
+            }
+
+            // ---------- Kategorien ----------
+            if (inList) {
+                CategoryPicker(listItem?.categories ?: emptyList()) { c -> Repo.toggleCategory(id, c) }
             }
 
             // ---------- Infos ----------
@@ -253,7 +299,12 @@ fun DetailScreen(id: String, seed: Seed?, onBack: () -> Unit, onOpen: (Screen) -
                     }
                     epError != null && eps == null -> Text(epError!!, color = Cine.Red, style = MaterialTheme.typography.bodyMedium)
                     eps != null && eps.isEmpty() -> Text("Keine Episoden gefunden.", color = Cine.TextDim)
-                    eps != null -> EpisodeSection(eps, selected, view, onView = { view = it }, onSelect = { selected = it })
+                    eps != null -> EpisodeSection(
+                        eps, selected, view, horizontal,
+                        onView = { view = it },
+                        onHorizontal = { horizontal = it; app.imdbcheck.Settings.heatmapHorizontal = it },
+                        onSelect = { selected = it },
+                    )
                 }
             }
             Spacer(Modifier.height(24.dp))
@@ -267,7 +318,9 @@ private fun EpisodeSection(
     eps: List<Episode>,
     selected: Episode?,
     view: Int,
+    horizontal: Boolean,
     onView: (Int) -> Unit,
+    onHorizontal: (Boolean) -> Unit,
     onSelect: (Episode) -> Unit,
 ) {
     val rated = remember(eps) { eps.filter { it.rating != null } }
@@ -291,7 +344,17 @@ private fun EpisodeSection(
                 ) { Text(label) }
             }
         }
-        if (view == 0) Heatmap(eps, selected, onSelect) else EpisodeGraph(eps, selected, onSelect)
+        if (view == 0) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Ausrichtung", color = Cine.TextDim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                CategoryChip("Senkrecht", selected = !horizontal, onClick = { onHorizontal(false) })
+                Spacer(Modifier.width(6.dp))
+                CategoryChip("Waagerecht", selected = horizontal, onClick = { onHorizontal(true) })
+            }
+            Heatmap(eps, selected, horizontal, onSelect)
+        } else {
+            EpisodeGraph(eps, selected, onSelect)
+        }
 
         if (view == 0) Legend()
         Text("Tippe auf eine Folge für Details.", color = Cine.TextDim, style = MaterialTheme.typography.bodySmall)

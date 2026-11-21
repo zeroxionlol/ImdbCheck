@@ -66,8 +66,15 @@ data class ListItem(
     val addedAt: Long,
     val updatedAt: Long,
     val watched: Boolean = false,
+    val categories: List<String> = emptyList(),
+    /** TVmaze-Status: Running, Ended, To Be Determined, In Development */
+    val status: String? = null,
+    val next: NextEpisode? = null,
 ) {
     val isSeries get() = Kinds.isSeries(kind)
+    /** Nächste Folge, sofern sie noch nicht (länger als einen Tag) zurückliegt. */
+    val upcoming: NextEpisode?
+        get() = next?.takeIf { it.airMillis > System.currentTimeMillis() - 24 * 3600_000L }
 
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("title", title)
@@ -79,6 +86,9 @@ data class ListItem(
         .put("votes", votes ?: JSONObject.NULL)
         .put("addedAt", addedAt).put("updatedAt", updatedAt)
         .put("watched", watched)
+        .put("categories", JSONArray(categories))
+        .put("status", status ?: JSONObject.NULL)
+        .put("next", next?.toJson() ?: JSONObject.NULL)
 
     companion object {
         fun fromJson(o: JSONObject) = ListItem(
@@ -93,8 +103,70 @@ data class ListItem(
             addedAt = o.optLong("addedAt"),
             updatedAt = o.optLong("updatedAt"),
             watched = o.optBoolean("watched", false),
+            categories = o.arr("categories")?.let { a -> (0 until a.length()).mapNotNull { a.optString(it).ifBlank { null } } } ?: emptyList(),
+            status = o.optStr("status"),
+            next = o.obj("next")?.let { NextEpisode.fromJson(it) },
         )
     }
+}
+
+/** Nächste Folge laut TVmaze. */
+data class NextEpisode(
+    val season: Int,
+    val number: Int,
+    val title: String?,
+    val airMillis: Long,
+    val hasTime: Boolean,
+) {
+    val code get() = "S%02dE%02d".format(season, number)
+
+    fun toJson(): JSONObject = JSONObject()
+        .put("season", season).put("number", number)
+        .put("title", title ?: JSONObject.NULL)
+        .put("air", airMillis).put("hasTime", hasTime)
+
+    /** z. B. „So, 23.11.2026 · 02:00 Uhr“ in der Zeitzone des Handys. */
+    fun whenText(): String {
+        val zdt = java.time.Instant.ofEpochMilli(airMillis).atZone(java.time.ZoneId.systemDefault())
+        val date = java.time.format.DateTimeFormatter.ofPattern("EE, dd.MM.yyyy", java.util.Locale.GERMANY).format(zdt)
+        return if (hasTime) date + " · " + java.time.format.DateTimeFormatter.ofPattern("HH:mm").format(zdt) + " Uhr" else date
+    }
+
+    /** heute / morgen / in 5 Tagen */
+    fun relativeText(): String {
+        val zone = java.time.ZoneId.systemDefault()
+        val day = java.time.Instant.ofEpochMilli(airMillis).atZone(zone).toLocalDate()
+        val days = java.time.temporal.ChronoUnit.DAYS.between(java.time.LocalDate.now(zone), day)
+        return when {
+            days < 0 -> "gelaufen"
+            days == 0L -> "heute"
+            days == 1L -> "morgen"
+            else -> "in $days Tagen"
+        }
+    }
+
+    fun shortDate(): String {
+        val zdt = java.time.Instant.ofEpochMilli(airMillis).atZone(java.time.ZoneId.systemDefault())
+        return java.time.format.DateTimeFormatter.ofPattern("dd.MM.").format(zdt)
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject) = NextEpisode(
+            season = o.optInt("season"), number = o.optInt("number"), title = o.optStr("title"),
+            airMillis = o.optLong("air"), hasTime = o.optBoolean("hasTime", true),
+        )
+    }
+}
+
+data class ShowStatus(val status: String?, val next: NextEpisode?) {
+    val statusText: String?
+        get() = when (status) {
+            "Running" -> "Läuft"
+            "Ended" -> "Beendet"
+            "To Be Determined" -> "Zukunft offen"
+            "In Development" -> "In Entwicklung"
+            else -> status
+        }
 }
 
 object Kinds {

@@ -272,3 +272,39 @@ object Omdb {
         return out
     }
 }
+
+/** TVmaze (api.tvmaze.com, frei nutzbar ohne Key): Status der Serie und Termin der nächsten Folge. */
+object TvMaze {
+    fun status(imdbId: String): ShowStatus {
+        val show = try {
+            JSONObject(Http.get("https://api.tvmaze.com/lookup/shows?imdb=$imdbId"))
+        } catch (e: IOException) {
+            if (e.message?.startsWith("HTTP 404") == true) return ShowStatus(null, null) // Serie bei TVmaze unbekannt
+            throw e
+        }
+        val tvId = show.optInt("id")
+        val status = show.optStr("status")
+        if (tvId == 0) return ShowStatus(status, null)
+        val full = JSONObject(Http.get("https://api.tvmaze.com/shows/$tvId?embed=nextepisode"))
+        val n = full.obj("_embedded")?.obj("nextepisode") ?: return ShowStatus(full.optStr("status") ?: status, null)
+        val stamp = n.optStr("airstamp")
+        val airtime = n.optStr("airtime")
+        val millis = stamp?.let { runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() }
+            ?: n.optStr("airdate")?.let {
+                runCatching {
+                    java.time.LocalDate.parse(it).atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+                }.getOrNull()
+            }
+            ?: return ShowStatus(full.optStr("status") ?: status, null)
+        return ShowStatus(
+            full.optStr("status") ?: status,
+            NextEpisode(
+                season = n.optInt("season"),
+                number = n.optInt("number"),
+                title = n.optStr("name"),
+                airMillis = millis,
+                hasTime = stamp != null && !airtime.isNullOrBlank(),
+            ),
+        )
+    }
+}
