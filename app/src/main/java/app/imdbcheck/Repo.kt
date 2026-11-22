@@ -57,8 +57,50 @@ object Repo {
     private val episodeCache = java.util.concurrent.ConcurrentHashMap<String, List<Episode>>()
     private val statusCache = java.util.concurrent.ConcurrentHashMap<String, ShowStatus>()
 
+    // ---------- Top 50 Serien ----------
+    private lateinit var topFile: File
+    var top by mutableStateOf<List<TitleInfo>>(emptyList())
+        private set
+    var topUpdated by mutableStateOf(0L)
+        private set
+
+    private fun TitleInfo.toTopJson(): JSONObject = JSONObject()
+        .put("id", id).put("title", title).put("kind", kind)
+        .put("original", originalTitle ?: JSONObject.NULL)
+        .put("year", year ?: JSONObject.NULL).put("endYear", endYear ?: JSONObject.NULL)
+        .put("rating", rating ?: JSONObject.NULL).put("votes", votes ?: JSONObject.NULL)
+        .put("poster", poster ?: JSONObject.NULL)
+
+    private fun topFromJson(o: JSONObject) = TitleInfo(
+        id = o.getString("id"), title = o.optString("title"), originalTitle = o.optStr("original"),
+        kind = o.optString("kind", "tvSeries"), year = o.optIntOrNull("year"), endYear = o.optIntOrNull("endYear"),
+        rating = o.optDoubleOrNull("rating"), votes = o.optIntOrNull("votes"), poster = o.optStr("poster"),
+        plot = null, genres = emptyList(), runtimeMin = null,
+    )
+
+    /** Lädt die Top 50 (höchstens einmal täglich neu, außer [force]). */
+    suspend fun loadTop(force: Boolean = false) {
+        if (!force && top.isNotEmpty() && System.currentTimeMillis() - topUpdated < 24 * 3600_000L) return
+        val list = withContext(Dispatchers.IO) { Imdb.topSeries(50) }
+        top = list
+        topUpdated = System.currentTimeMillis()
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val arr = JSONArray(); list.forEach { arr.put(it.toTopJson()) }
+                topFile.writeText(JSONObject().put("updated", topUpdated).put("items", arr).toString())
+            }
+        }
+    }
+
     fun init(ctx: Context) {
         Settings.init(ctx)
+        topFile = File(ctx.filesDir, "top50.json")
+        runCatching {
+            val o = JSONObject(topFile.readText())
+            val arr = o.getJSONArray("items")
+            top = (0 until arr.length()).map { topFromJson(arr.getJSONObject(it)) }
+            topUpdated = o.optLong("updated")
+        }
         file = File(ctx.filesDir, "list.json")
         runCatching {
             val text = file.readText()

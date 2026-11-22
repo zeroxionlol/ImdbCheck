@@ -12,6 +12,8 @@ Eigene App im Stil von seriesgraph.com: Filme und Serien suchen, IMDb-Wertungen 
 - Detailseite mit IMDb-Wertung, Stimmen, Genres, Handlung
 - Serien: Episoden-Heatmap (Staffeln × Folgen, Farbskala), Verlaufsgraph mit Trendlinie je Staffel, Staffel-Durchschnitt, Top- und Flop-Folgen
 - Meine Liste: IMDb-Wertung, Filter (Filme/Serien), Sortierung, „Gesehen“-Haken, automatische Aktualisierung alle 12 Stunden
+- Top 50: die bestbewerteten Serien auf IMDb
+- Kategorien (z. B. Anime), Gesehen-Filter, nächste Folge laufender Serien (TVmaze)
 - Datensicherung als JSON (Export/Import)
 
 ## Datenquellen

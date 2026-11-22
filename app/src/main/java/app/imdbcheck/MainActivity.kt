@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -32,6 +33,7 @@ import app.imdbcheck.ui.ListScreen
 import app.imdbcheck.ui.SearchScreen
 import app.imdbcheck.ui.SearchState
 import app.imdbcheck.ui.SettingsScreen
+import app.imdbcheck.ui.TopScreen
 
 /** Vorab bekannte Daten, damit die Detailseite sofort etwas zeigt. */
 data class Seed(val title: String, val poster: String?, val kind: String, val yearText: String?)
@@ -52,7 +54,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AppRoot() {
-    var tab by rememberSaveable { mutableStateOf(if (Repo.items.isEmpty()) 0 else 1) }
+    var tab by rememberSaveable { mutableStateOf(if (Repo.items.isEmpty()) 0 else 2) }
     val stack = remember { mutableStateListOf<Screen>() }
     val search = remember { SearchState() }
     val open: (Screen) -> Unit = { stack.add(it) }
@@ -81,6 +83,10 @@ private fun AppRoot() {
                     )
                     NavigationBarItem(
                         selected = tab == 1, onClick = { tab = 1 },
+                        icon = { Icon(Icons.Filled.Star, null) }, label = { Text("Top 50") }, colors = colors,
+                    )
+                    NavigationBarItem(
+                        selected = tab == 2, onClick = { tab = 2 },
                         icon = { Icon(Icons.AutoMirrored.Filled.List, null) },
                         label = { Text("Meine Liste (${Repo.items.size})") }, colors = colors,
                     )
@@ -88,8 +94,11 @@ private fun AppRoot() {
             },
         ) { pad ->
             Box(Modifier.fillMaxSize().padding(pad)) {
-                if (tab == 0) SearchScreen(search, onOpen = open)
-                else ListScreen(onOpen = open, onSearch = { tab = 0 })
+                when (tab) {
+                    0 -> SearchScreen(search, onOpen = open)
+                    1 -> TopScreen(onOpen = open)
+                    else -> ListScreen(onOpen = open, onSearch = { tab = 0 })
+                }
             }
         }
     }

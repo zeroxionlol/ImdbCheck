@@ -56,7 +56,7 @@ object Imdb {
     }
 
     /** Führt eine Abfrage aus und liefert `data` – probiert beide Endpunkte. */
-    private fun gql(query: String): JSONObject {
+    private fun gql(query: String, valid: (JSONObject) -> Boolean = { it.obj("title") != null }): JSONObject {
         val body = JSONObject().put("query", query).toString()
         var last: Exception? = null
         for (ep in ENDPOINTS) {
@@ -64,7 +64,7 @@ object Imdb {
                 val res = JSONObject(Http.postJson(ep, body, headers()))
                 val data = res.obj("data")
                 val errors = res.arr("errors")
-                if (data != null && data.obj("title") != null) return data
+                if (data != null && valid(data)) return data
                 val msg = errors?.optJSONObject(0)?.optString("message") ?: "keine Daten"
                 last = IOException("IMDb: $msg")
                 // Schema-/Abfragefehler sind auf dem zweiten Endpunkt identisch → nicht wiederholen
@@ -103,6 +103,101 @@ object Imdb {
         val min = """{ title(id: "$id") { $BASE_FIELDS } }"""
         val data = firstSuccess(if (minimal) listOf(min) else listOf(full, min))
         return parseTitle(data.getJSONObject("title"), id)
+    }
+
+    // ---------- Top-Serien ----------
+
+    /** Top-Serien laut IMDb (Top 250 TV), die ersten [count] Plätze. */
+    fun topSeries(count: Int = 50): List<TitleInfo> {
+        val attempts = listOf<() -> List<TitleInfo>>(
+            {
+                val q = """{ chartTitles(first: $count, chart: { chartType: TOP_RATED_TV_SHOWS }) {
+                    edges { currentRank node { $BASE_FIELDS } } } }"""
+                edgesToTitles(gql(q) { it.obj("chartTitles") != null }.getJSONObject("chartTitles"))
+            },
+            {
+                val q = """{ titleChartRankings(first: $count, input: { rankingsChartType: TOP_250_TV }) {
+                    edges { node { rank item { $BASE_FIELDS } } } } }"""
+                edgesToTitles(gql(q) { it.obj("titleChartRankings") != null }.getJSONObject("titleChartRankings"))
+            },
+            { topSeriesFromPage() },
+        )
+        var last: Exception? = null
+        for (a in attempts) {
+            try {
+                val list = a()
+                if (list.size >= 10) return list.take(count)
+                last = IOException("Liste unvollständig")
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw last ?: IOException("Top-Liste nicht verfügbar")
+    }
+
+    /** Kanten einer Chart-Abfrage in Titel umwandeln (beide bekannten Formen). */
+    private fun edgesToTitles(conn: JSONObject): List<TitleInfo> {
+        val out = mutableListOf<Pair<Int, TitleInfo>>()
+        conn.arr("edges")?.forEachObj { e ->
+            val node = e.obj("node") ?: return@forEachObj
+            val t = node.obj("item") ?: node
+            val id = t.optStr("id") ?: return@forEachObj
+            val rank = e.optIntOrNull("currentRank") ?: node.optIntOrNull("rank") ?: (out.size + 1)
+            out += rank to parseTitle(t, id)
+        }
+        return out.sortedBy { it.first }.map { it.second }
+    }
+
+    /** Ersatz: Chart-Seite von imdb.com lesen (eingebettete Seitendaten bzw. JSON-LD). */
+    private fun topSeriesFromPage(): List<TitleInfo> {
+        val html = Http.get("https://www.imdb.com/chart/toptv/", mapOf("Accept" to "text/html"))
+        // 1) __NEXT_DATA__ mit chartTitles
+        Regex("""<script id="__NEXT_DATA__"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL).find(html)?.let { m ->
+            runCatching {
+                findChart(JSONObject(m.groupValues[1]))?.let { conn ->
+                    val list = edgesToTitles(conn)
+                    if (list.isNotEmpty()) return list
+                }
+            }
+        }
+        // 2) JSON-LD ItemList
+        val out = mutableListOf<TitleInfo>()
+        Regex("""<script type="application/ld\+json"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL).findAll(html).forEach { m ->
+            val o = runCatching { JSONObject(m.groupValues[1]) }.getOrNull() ?: return@forEach
+            o.arr("itemListElement")?.forEachObj { el ->
+                val item = el.obj("item") ?: el
+                val id = Regex("tt\\d+").find(item.optString("url"))?.value ?: return@forEachObj
+                out += TitleInfo(
+                    id = id,
+                    title = android.text.Html.fromHtml(item.optString("name"), 0).toString(),
+                    originalTitle = item.optStr("alternateName"),
+                    kind = "tvSeries",
+                    year = null, endYear = null,
+                    rating = item.obj("aggregateRating")?.optDoubleOrNull("ratingValue"),
+                    votes = item.obj("aggregateRating")?.optIntOrNull("ratingCount"),
+                    poster = item.optStr("image"),
+                    plot = item.optStr("description"),
+                    genres = item.optStr("genre")?.split(",")?.map { g -> g.trim() } ?: emptyList(),
+                    runtimeMin = null,
+                )
+            }
+        }
+        return out
+    }
+
+    /** Sucht rekursiv nach einem Objekt „chartTitles“ mit „edges“. */
+    private fun findChart(o: Any?, depth: Int = 0): JSONObject? {
+        if (depth > 12) return null
+        when (o) {
+            is JSONObject -> {
+                o.optJSONObject("chartTitles")?.takeIf { it.has("edges") }?.let { return it }
+                o.optJSONObject("titleChartRankings")?.takeIf { it.has("edges") }?.let { return it }
+                val keys = o.keys()
+                while (keys.hasNext()) findChart(o.opt(keys.next()), depth + 1)?.let { return it }
+            }
+            is org.json.JSONArray -> for (i in 0 until o.length()) findChart(o.opt(i), depth + 1)?.let { return it }
+        }
+        return null
     }
 
     private fun parseTitle(t: JSONObject, id: String): TitleInfo {
